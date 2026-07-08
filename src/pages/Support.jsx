@@ -5,24 +5,60 @@ export default function SupportPage() {
   const [code, setCode] = useState('')
   const [connected, setConnected] = useState(false)
   const [remoteStream, setRemoteStream] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
   const pcRef = useRef(null)
 
   useEffect(() => {
+
     socket.on('request-accepted', () => {
-      // start listening for signal offer
+      // server informed us the user accepted; we'll wait for the user's offer
       setConnected(true)
+      setLoading(true)
+      setError(null)
+    })
+
+    socket.on('request-declined', () => {
+      setError('User declined the request')
+      setLoading(false)
+      setConnected(false)
     })
 
     socket.on('signal', async ({ from, data }) => {
       if (data.type === 'candidate') {
         try {
-          await pcRef.current.addIceCandidate(data.candidate)
+          if (pcRef.current) await pcRef.current.addIceCandidate(data.candidate)
         } catch (e) {
           // ignore
         }
-      } else {
-        // assume answer
-        await pcRef.current.setRemoteDescription(new RTCSessionDescription(data))
+      } else if (data.type === 'offer') {
+        // User is sending an offer; create peer, set remote, create answer
+        const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })
+        pcRef.current = pc
+        const remoteStream = new MediaStream()
+        setRemoteStream(remoteStream)
+
+        pc.ontrack = (e) => {
+          e.streams[0].getTracks().forEach((t) => remoteStream.addTrack(t))
+        }
+
+        pc.onicecandidate = (e) => {
+          if (e.candidate) socket.emit('signal', { to: from, data: { type: 'candidate', candidate: e.candidate } })
+        }
+
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(data))
+          const answer = await pc.createAnswer()
+          await pc.setLocalDescription(answer)
+          socket.emit('signal', { to: from, data: pc.localDescription })
+          setLoading(false)
+          setConnected(true)
+        } catch (e) {
+          setError('Failed to establish peer connection')
+          setLoading(false)
+        }
+      } else if (data.type === 'answer') {
+        // shouldn't normally happen on support side
       }
     })
 
