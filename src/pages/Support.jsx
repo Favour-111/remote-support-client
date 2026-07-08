@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { socket } from '../services/socket'
+import Chat from '../components/Chat'
+import AnnotationLayer from '../components/AnnotationLayer'
 
 export default function SupportPage() {
   const [code, setCode] = useState('')
@@ -8,6 +10,10 @@ export default function SupportPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const pcRef = useRef(null)
+  const videoRef = useRef(null)
+  const [strokes, setStrokes] = useState([])
+  const [clearSignal, setClearSignal] = useState(0)
+  const [listening, setListening] = useState(false)
 
   useEffect(() => {
 
@@ -62,6 +68,15 @@ export default function SupportPage() {
       }
     })
 
+    socket.on('annotation', ({ from, stroke }) => {
+      setStrokes((s) => [...s, stroke])
+    })
+
+    socket.on('clear-annotations', () => {
+      setStrokes([])
+      setClearSignal((n) => n + 1)
+    })
+
     socket.on('session-ended', () => {
       setConnected(false)
       setRemoteStream(null)
@@ -104,6 +119,44 @@ export default function SupportPage() {
     socket.emit('end-session', { code })
   }
 
+  const onStroke = (stroke) => {
+    // broadcast to session
+    socket.emit('annotation', { code, stroke })
+    setStrokes((s) => [...s, stroke])
+  }
+
+  const clearAnnotations = () => {
+    socket.emit('clear-annotations', { code })
+    setStrokes([])
+    setClearSignal((n) => n + 1)
+  }
+
+  const toggleFullscreen = () => {
+    const v = videoRef.current
+    if (!v) return
+    if (document.fullscreenElement) document.exitFullscreen()
+    else v.requestFullscreen().catch(() => {})
+  }
+
+  const startVoice = () => {
+    const Speech = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!Speech) {
+      setError('Speech Recognition not supported in this browser')
+      return
+    }
+    const recog = new Speech()
+    recog.lang = 'en-US'
+    recog.interimResults = false
+    recog.onresult = (e) => {
+      const text = e.results[0][0].transcript
+      socket.emit('chat', { code, message: text, from: 'support (voice)' })
+    }
+    recog.onend = () => setListening(false)
+    recog.onerror = () => setListening(false)
+    recog.start()
+    setListening(true)
+  }
+
   return (
     <div className="p-6">
       <div className="max-w-3xl mx-auto">
@@ -117,12 +170,25 @@ export default function SupportPage() {
           <div className="mt-6">
             {connected ? (
               <div>
-                <div>Viewing screen</div>
-                <div className="mt-3">
-                  <video autoPlay playsInline ref={(el) => { if (el && remoteStream) el.srcObject = remoteStream }} className="w-full rounded" />
+                <div className="flex items-center justify-between">
+                  <div className="font-medium">Viewing screen</div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={toggleFullscreen} className="px-2 py-1 border rounded">Expand</button>
+                    <button onClick={clearAnnotations} className="px-2 py-1 border rounded">Clear</button>
+                    <button onClick={startVoice} className={`px-2 py-1 border rounded ${listening ? 'bg-blue-600 text-white' : ''}`}>{listening ? 'Listening...' : 'Voice'}</button>
+                  </div>
+                </div>
+                <div className="mt-3 relative" style={{ paddingTop: '56.25%' }}>
+                  <video autoPlay playsInline ref={(el) => { videoRef.current = el; if (el && remoteStream) el.srcObject = remoteStream }} className="absolute inset-0 w-full h-full object-contain rounded" />
+                  <div className="absolute inset-0 pointer-events-auto">
+                    <AnnotationLayer incomingStrokes={strokes} clearSignal={clearSignal} onStroke={onStroke} />
+                  </div>
                 </div>
                 <div className="mt-3">
                   <button onClick={endSession} className="px-3 py-2 bg-red-600 text-white rounded">End Session</button>
+                </div>
+                <div className="mt-4">
+                  <Chat code={code} me={'support'} />
                 </div>
               </div>
             ) : (
